@@ -17,6 +17,16 @@ per glass: decide how many glasses to make and what to charge. Rain means no
 sales, but you still pay for every glass. After a season of 30 days (by
 default), your cash is your score on the top ten.
 
+- **ANSI art with bean characters.**
+  - **Splash:** a bean running its lemonade stand.
+  - **Each day:** a weather icon beside the forecast, and a happy, soggy or
+    glum bean beside the results.
+  - **News:** a shocked bean when sugar, lemons or cups go up.
+  - **Season end:** a celebration, a CLOSED sign if you go bust, and a trophy
+    for a top-ten finish.
+
+  It's half-block pixel art drawn in code. Non-ANSI callers get the text
+  only.
 - **Saved after every day.** A dropped call loses nothing; the next visit
   picks the season up where it was.
 - **Multi-node safe.** Player and score files are locked while they're
@@ -28,8 +38,9 @@ default), your cash is your score on the top ten.
 
 Requires Synchronet 3.20 or later.
 
-1. Copy `src/lemonade.js` to Synchronet's `exec/` (or `mods/`) and
-   `src/lemonade_engine.js` to `exec/load/` (or `mods/load/`).
+1. Copy `src/lemonade.js` to Synchronet's `exec/` (or `mods/`), and
+   `src/lemonade_engine.js` and `src/lemonade_art.js` to `exec/load/` (or
+   `mods/load/`).
 2. In SCFG, under External Programs, add a program to a section:
    - **Command Line:** `?lemonade`
    - **Multiple Concurrent Users:** Yes
@@ -50,7 +61,7 @@ Saved games and the top ten go in `data/lemonade/` (`players.json`,
 ## Development
 
 ```
-node test/test_engine.js                              # engine tests, no dependencies
+node test/test_engine.js && node test/test_art.js     # no dependencies
 docker build -t lemonade-test . && docker run --rm lemonade-test
 ```
 
@@ -59,6 +70,11 @@ clock, no global randomness and no I/O, and it stays ES5. Synchronet's
 SpiderMonkey has no `let`, `const`, arrow functions or `Math.imul`, and a
 test enforces that. The same file loads in Synchronet (`load()`) and in node
 (`require()`).
+
+The art is drawn in code by `tools/make_art.py`, which writes
+`src/lemonade_art.js` (don't edit that file by hand; CI checks it matches the
+script). `python3 tools/preview_art.py art.html` renders every piece in a
+browser, in VGA colors.
 
 `test/fixtures/golden.json` holds runs recorded from the original TypeScript
 engine. To re-record them, check out joeyparrish/lemonade, copy
