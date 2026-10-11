@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Engine tests (in a container)
+      - name: Engine, art and door tests (in a container)
         run: |
           docker build -t lemonade-test .
           docker run --rm lemonade-test
-      - name: Door script parses as JavaScript
-        run: docker run --rm -v "$PWD/src:/src:ro" node:22-alpine node --check /src/lemonade.js
+      - name: Art module matches its generator
+        run: python3 tools/make_art.py --check
