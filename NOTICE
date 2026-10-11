@@ -1,0 +1,11 @@
+Lemonade Stand for Synchronet
+Copyright 2026 Michael Bino
+
+This product includes software derived from "Lemonade" by Joey Parrish
+(https://github.com/joeyparrish/lemonade), licensed under the Apache
+License, Version 2.0: the game engine in src/lemonade_engine.js (ported to
+ES5 JavaScript) and the golden-run recorder in tools/record-golden.mts.
+
+Lemonade (1996) was a BBS door game by Tom Wildoner, T&J Software. No code,
+screens or data from the original program are included here; the game's
+formulas were recovered by the project above.

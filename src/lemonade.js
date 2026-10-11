@@ -1,0 +1,316 @@
+// lemonade.js -- Lemonade Stand, a native Synchronet (JavaScript) door.
+//
+// A modern replacement for T&J Software's DOS Lemonade v4.20, which can no
+// longer be registered (unregistered: one play a day, four game days). Same game: the engine
+// (load/lemonade_engine.js) is a port of joeyparrish/lemonade (Apache-2.0),
+// which recreates the original's formulas from its binary. This file is the
+// door around it: screens in a white/green/brown/red/grey palette, a saved game per caller
+// (resumed next visit, so a dropped call loses nothing), and a top ten.
+//
+// Run as an external program:  ?lemonade
+//
+// Options (ctrl/modopts.ini, [lemonade]):
+//   plays_per_day = 3     visits a day in which a caller may play (0 = unlimited)
+//   days_per_play = 0     game days per visit (0 = unlimited)
+//   season_days   = 30    game days in a season; the final cash is the score
+//
+// Data: data/lemonade/players.json and scores.json.
+
+"use strict";
+
+require("sbbsdefs.js", "K_NUMBER");
+var E = load({}, "lemonade_engine.js");
+
+var opts = load({}, "modopts.js", "lemonade") || {};
+function opt(name, dflt) {
+	var v = parseInt(opts[name], 10);
+	return isNaN(v) ? dflt : v;
+}
+var PLAYS_PER_DAY = opt("plays_per_day", 3);
+var DAYS_PER_PLAY = opt("days_per_play", 0);
+var SEASON_DAYS = Math.max(1, opt("season_days", E.SEASON_DAYS));
+
+// Palette: white, light green, green, brown, red, grey.
+var N = "\x01n", WHITE = "\x01n\x01h\x01w", GREY = "\x01n\x01w", LGREEN = "\x01n\x01h\x01g",
+	GREEN = "\x01n\x01g", BROWN = "\x01n\x01y", LRED = "\x01n\x01h\x01r";
+var DEG = "\xf8", CENT = "\x9b", HBAR = "\xc4";
+
+var DATA_DIR = system.data_dir + "lemonade/";
+var PLAYERS = DATA_DIR + "players.json";
+var SCORES = DATA_DIR + "scores.json";
+var me = user.alias;
+var key = me.toLowerCase();
+
+// --- storage: locked read-modify-write, safe with several nodes playing --------
+function withJson(path, dflt, fn) {
+	if (!file_isdir(DATA_DIR))
+		mkpath(DATA_DIR);
+	var f = new File(path);
+	if (!f.open(file_exists(path) ? "r+b" : "w+b"))
+		throw new Error("can't open " + path);
+	for (var tries = 0; !f.lock(0, 1) && tries < 50; tries++)
+		mswait(100);
+	try {
+		var text = f.read();
+		var data = dflt;
+		if (text && text.length) {
+			try { data = JSON.parse(text); } catch (e) { log(LOG_WARNING, "lemonade: bad " + path + ": " + e); }
+		}
+		var result = fn(data);
+		if (result !== undefined) {
+			f.position = 0;
+			f.truncate(0);
+			f.write(JSON.stringify(result));
+			f.flush();
+		}
+	} finally {
+		f.unlock(0, 1);
+		f.close();
+	}
+}
+
+function loadPlayer() {
+	var rec = null;
+	withJson(PLAYERS, {}, function (all) { rec = all[key] || null; return undefined; });
+	return rec || { name: me };
+}
+
+function savePlayer(rec) {
+	rec.name = me;
+	withJson(PLAYERS, {}, function (all) { all[key] = rec; return all; });
+}
+
+function loadScores() {
+	var list = [];
+	withJson(SCORES, [], function (s) { list = s; return undefined; });
+	return list;
+}
+
+function recordScore(cashCents) {
+	var rank = 0;
+	withJson(SCORES, [], function (s) {
+		var r = E.addScore(s, { name: me, cashCents: cashCents, date: strftime("%Y-%m-%d", time()) });
+		rank = r.rank;
+		return r.scores;
+	});
+	return rank;
+}
+
+function today() { return strftime("%Y-%m-%d", time()); }
+
+function newSeed() { return ((time() * 2654435761) ^ random(0x7fffffff)) >>> 0; }
+
+// --- screens -------------------------------------------------------------------
+function rule(width) {
+	var s = "";
+	for (var i = 0; i < width; i++) s += HBAR;
+	return GREEN + s;
+}
+
+function header(state) {
+	console.clear(LIGHTGRAY);
+	var title = WHITE + "LEMONADE STAND" + GREY + "  5" + CENT + " a glass";
+	console.print(title);
+	if (state) {
+		var right = GREY + "Day " + WHITE + state.day + GREY + " of " + WHITE + state.seasonDays
+			+ GREY + "   Cash: " + LGREEN + E.formatCents(state.cashCents);
+		console.right(79 - console.current_column - console.strlen(right));
+		console.print(right);
+	}
+	console.crlf();
+	console.print(rule(79) + "\r\n\r\n");
+}
+
+function visible(str) { return str.replace(/\x01./g, "").length; }
+
+function padTo(str, width) {
+	var n = width - visible(str);
+	return n > 0 ? str + format("%*s", n, "") : str;
+}
+
+function title() {
+	console.clear(LIGHTGRAY);
+	var W = 44, top = "", bottom = "";
+	for (var i = 0; i < W + 2; i++) { top += "\xdc"; bottom += "\xdf"; }
+	var box = function (text) { return BROWN + "      \xdb" + padTo(text, W) + BROWN + "\xdb"; };
+	var lines = [
+		"",
+		BROWN + "      " + top,
+		box(WHITE + "  L E M O N A D E   S T A N D"),
+		box(GREY + "      Lemonade 5 cents a glass"),
+		BROWN + "      " + bottom,
+		BROWN + "        \xdb" + format("%*s", W - 2, "") + "\xdb",
+		"",
+		GREY + "      Your mother gave you " + LGREEN + "$1.00" + GREY + " to start a lemonade stand.",
+		GREY + "      Sell as much as you can in " + WHITE + SEASON_DAYS + GREY + " days. Watch the weather.",
+		"",
+		GREY + "      After T&J Software's Lemonade (1996).",
+		""
+	];
+	for (var j = 0; j < lines.length; j++)
+		console.print(lines[j] + "\r\n");
+	console.pause();
+}
+
+var NEWS = {
+	sugar: "The price of " + WHITE + "SUGAR" + GREY + " has gone up!",
+	lemons: "The price of " + WHITE + "LEMONS" + GREY + " has gone up!",
+	cups: "The price of " + WHITE + "PAPER CUPS" + GREY + " has gone up!"
+};
+
+function statusScreen(state, rec) {
+	header(state);
+	var w = state.pendingWeather;
+	console.print(BROWN + "  Weather forecast   " + WHITE + w.temperatureF + DEG + "F" + GREY + ", "
+		+ (w.chanceOfRain ? WHITE + w.chanceOfRain + "%" + GREY + " chance of rain" : LGREEN + "no rain" + GREY) + "\r\n");
+	console.print(BROWN + "  Cost per glass     " + WHITE + E.formatCents(state.costPerGlassCents) + "\r\n");
+	console.print(BROWN + "  You can afford     " + WHITE + E.maxAffordableGlasses(state) + GREY + " glasses\r\n");
+	console.print(BROWN + "  Days left          " + WHITE + (state.seasonDays - state.day + 1) + "\r\n");
+	if (state.pendingEvent)
+		console.print("\r\n  " + LRED + "News! " + GREY + NEWS[state.pendingEvent] + "\r\n");
+	var left = E.playsLeft(rec, today(), PLAYS_PER_DAY);
+	if (left !== Infinity)
+		console.print("\r\n  " + GREY + "Plays left today: " + WHITE + left + "\r\n");
+	console.print("\r\n  " + menuKey("N") + GREY + "Next day   " + menuKey("S") + GREY + "Scores   "
+		+ menuKey("I") + GREY + "Instructions   " + menuKey("Q") + GREY + "Quit\r\n\r\n  "
+		+ BROWN + "Which? " + WHITE);
+}
+
+function menuKey(k) { return GREEN + "[" + LGREEN + k + GREEN + "] "; }
+
+function askNumber(prompt, max) {
+	console.print(prompt + GREY + " (0-" + max + ")? " + WHITE);
+	var s = console.getstr("", String(max).length, K_NUMBER);
+	if (!bbs.online || s === null || s === "")
+		return -1;
+	var n = parseInt(s, 10);
+	if (isNaN(n) || n < 0 || n > max) {
+		console.print(LRED + "  That's not between 0 and " + max + ".\r\n" + N);
+		return askNumber(prompt, max);
+	}
+	return n;
+}
+
+function playDay(state) {
+	console.crlf();
+	var max = E.maxAffordableGlasses(state);
+	var glasses = askNumber("\r\n  " + BROWN + "How many glasses of lemonade do you want to make", max);
+	if (glasses < 0)
+		return null;
+	var price = askNumber("  " + BROWN + "Price to charge per glass, in cents", E.MAX_PRICE_CENTS);
+	if (price < 0)
+		return null;
+	var next = E.advanceDay(state, { glassesMade: glasses, priceCents: price });
+	var o = next.history[next.history.length - 1];
+	header(next);
+	console.print(WHITE + "  Day " + o.day + " results\r\n\r\n");
+	if (o.rained)
+		console.print("  " + LRED + "It rained! " + GREY + "Nobody came out for lemonade today.\r\n\r\n");
+	else
+		console.print("  " + GREY + "A " + WHITE + o.weather.temperatureF + DEG + "F" + GREY + " day and no rain.\r\n\r\n");
+	console.print(BROWN + "  Glasses made       " + WHITE + o.glassesMade + "\r\n");
+	console.print(BROWN + "  Glasses sold       " + WHITE + o.glassesSold + GREY + " at " + WHITE + o.priceCents + CENT + "\r\n");
+	console.print(BROWN + "  Total Cost:        " + WHITE + E.formatCents(o.totalCostCents) + "\r\n");
+	console.print(BROWN + "  Total Sales:       " + WHITE + E.formatCents(o.totalSalesCents) + "\r\n");
+	console.print(BROWN + "  Profit             " + (o.profitCents < 0 ? LRED : LGREEN) + E.formatCents(o.profitCents) + "\r\n");
+	console.print(BROWN + "  Cash               " + LGREEN + E.formatCents(o.cashCents) + "\r\n\r\n");
+	console.pause();
+	return next;
+}
+
+function seasonOver(state) {
+	header(state);
+	if (E.wentBust(state))
+		console.print("  " + LRED + "You can't afford another glass. " + GREY + "Your stand closes early.\r\n\r\n");
+	else
+		console.print("  " + WHITE + "That's the end of the season!\r\n\r\n");
+	console.print(BROWN + "  Final cash         " + LGREEN + E.formatCents(state.cashCents) + "\r\n\r\n");
+	var rank = recordScore(state.cashCents);
+	if (rank)
+		console.print("  " + LGREEN + "You made the top ten, at #" + rank + "!\r\n\r\n");
+	console.print("  " + GREY + "A new season starts on your next day.\r\n\r\n");
+	console.pause();
+	showScores();
+}
+
+function showScores() {
+	header(null);
+	console.print(WHITE + "  Top Ten Lemonade Stands\r\n\r\n");
+	var s = loadScores();
+	if (!s.length)
+		console.print("  " + GREY + "Nobody has finished a season yet.\r\n");
+	for (var i = 0; i < s.length; i++) {
+		console.print(format("  %s%2d. %s%-25.25s %s%14s  %s%s\r\n", LGREEN, i + 1, WHITE, s[i].name,
+			LGREEN, E.formatCents(s[i].cashCents), GREY, s[i].date || ""));
+	}
+	console.crlf();
+	console.pause();
+}
+
+function instructions() {
+	header(null);
+	var t = [
+		WHITE + "  How to play",
+		"",
+		GREY + "  Each day you see the weather forecast and what a glass costs to make.",
+		GREY + "  Decide how many glasses to make and what to charge. Hot, dry days sell",
+		GREY + "  best; the higher your price, the fewer people buy. If it rains, nobody",
+		GREY + "  buys -- but you've still paid for every glass you made.",
+		"",
+		GREY + "  Now and then sugar, lemons or paper cups get more expensive.",
+		GREY + "  A season is " + WHITE + SEASON_DAYS + GREY + " days; your cash at the end is your score. Your",
+		GREY + "  game is saved after every day, so you can quit and pick up later.",
+		""
+	];
+	for (var i = 0; i < t.length; i++)
+		console.print(t[i] + "\r\n");
+	console.pause();
+}
+
+// --- the visit ---------------------------------------------------------------------
+function main() {
+	title();
+	var rec = loadPlayer();
+	var playedThisVisit = 0;
+	while (bbs.online) {
+		if (!rec.state || rec.state.finished)
+			rec.state = E.startRun(newSeed(), SEASON_DAYS);
+		statusScreen(rec.state, rec);
+		var k = console.getkeys("NSIQ?\r", 0);
+		if (!bbs.online || k === "Q")
+			break;
+		if (k === "S") { showScores(); continue; }
+		if (k === "I" || k === "?") { instructions(); continue; }
+		if (k !== "N") continue;
+
+		if (!playedThisVisit && E.playsLeft(rec, today(), PLAYS_PER_DAY) <= 0) {
+			console.print("\r\n\r\n  " + LRED + "You've used all " + PLAYS_PER_DAY + " plays for today."
+				+ GREY + " Come back tomorrow!\r\n\r\n");
+			console.pause();
+			continue;
+		}
+		if (DAYS_PER_PLAY > 0 && playedThisVisit >= DAYS_PER_PLAY) {
+			console.print("\r\n\r\n  " + GREY + "That's all " + DAYS_PER_PLAY + " days for this play.\r\n\r\n");
+			console.pause();
+			continue;
+		}
+		var next = playDay(rec.state);
+		if (!next)
+			continue;
+		if (!playedThisVisit)
+			rec = E.usePlay(rec, today());
+		playedThisVisit++;
+		rec.state = next;
+		savePlayer(rec);                 // after every day: a dropped call loses nothing
+		if (next.finished) {
+			seasonOver(next);
+			rec.seasons = (rec.seasons || 0) + 1;
+			rec.best = Math.max(rec.best || 0, next.cashCents);
+			rec.state = null;
+			savePlayer(rec);
+		}
+	}
+	console.print(N + "\r\n");
+}
+
+main();
